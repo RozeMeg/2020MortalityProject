@@ -1,0 +1,213 @@
+---
+title: "2020 Mortality Analysis - Initial Data Cleaning"
+author: "Meg Rosales"
+date: "4/4/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Setup
+```{r,warning=F}
+#Set working directory
+setwd("~/mort2020us")
+
+#Packages
+library(tidyverse)
+library(pdftools)
+library(readr)
+```
+
+#### Read in the data -- Attempt #1
+
+```{r,eval = F}
+death2020 <- read.csv("mort2020.csv")
+
+#Preview the data
+head(death2020)
+```
+
+Initial attempts at reading in the data revealed that the mortality data is a fixed width file. This blog post explains how to extract the data necessary in order to read the fixed width file:  https://sdaza.com/blog/2016/read-mortality-data/ . Let's extract the fixed width file data first.
+
+
+#### Extract fixed-width data file information
+
+Fortunately, this blog provides a starting point for how to glean data from a pdf file: https://rstudio-pubs-static.s3.amazonaws.com/415060_553527fd13ed4f30aae0f1e4483aa970.html .
+
+```{r}
+#Read in the text data
+fw_pdf <- pdf_text("Multiple-Cause-Record-Layout-2020.pdf")%>%
+  readr::read_lines()
+
+#Examine the extracted data
+#fw_pdf
+```
+
+We want to grab only the lines that begin with just a number or numerical range since those are the tape locations (spaces taken up by each field within the fixed width file). After visual inspection of PDF output, we can first reduce the PDF data to Lines 72-979.
+
+```{r}
+#Get rid of unneeded lines
+fw_pdf_red <- fw_pdf[-c(1:71,980:length(fw_pdf))]
+
+#Check
+#fw_pdf_red
+```
+
+Now we can use reg expressions to grab only the lines that begin with a number or numerical range.
+
+```{r}
+fw_pdf_varlines <- fw_pdf_red[which(grepl("^[0-9]",fw_pdf_red))]
+
+#Check
+fw_pdf_varlines
+```
+
+We have duplicate numbers in the ranges. We see from the list that when we see a number at the beginning of two ranges, we want to take the second range. We use reg expressions to identify and delete these lines as well.
+
+```{r}
+#Get first number in each line
+fw_pdf_firstnum <- lapply(fw_pdf_varlines,function(x){regmatches(x,regexpr("^[0-9]*",x))})
+
+#Check
+#fw_pdf_firstnum
+#length(fw_pdf_firstnum)
+
+#Identify position of duplicates in list and delete them
+fw_pdf_vars <- fw_pdf_varlines[which(!duplicated(fw_pdf_firstnum,fromLast = T))]
+
+#Check
+fw_pdf_vars
+
+```
+
+This list looks good. There are no overlapping ranges. Now we want to set these numbers and variables up in a data frame so that we can use them later to parse our file. For each variable, we will get the starting point, end point, variable length, and variable name (turns out we didn't need the variable length, but ah well, more practice with reg expressions). 
+
+We again use reg expressions to extract the first and last positions as well as the variable length from the list of strings. We will manually create a list of meaningful variable names.
+
+```{r}
+#Get list of first position numbers and convert to numeric
+fw_first <- lapply(fw_pdf_vars,function(x){as.numeric(regmatches(x,regexpr("^[0-9]*",x)))})
+#Check
+#fw_first
+
+#Get list of last position numbers and convert to numeric
+fw_last <- lapply(fw_pdf_vars,function(x){as.numeric(gsub("\\-","",regmatches(x,regexpr("\\-[0-9]*",x))))})
+#Check
+#fw_last
+
+#Rows with length 1 will not have a range - can replace this later with first position number
+
+#Get list of length numbers and convert to numeric
+fw_length <- lapply(fw_pdf_vars,function(x){as.numeric(gsub(" ","", regmatches(x,regexpr("\\s+[0-9]*\\s+",x))))})
+#Check
+#fw_length
+
+#Create list of variables
+fw_vars <- c("reserved_posns","res_status","reserved_posns2","edu_1989","edu_2003",
+             "edu_report_flag","death_month","reserved_posns3","sex","detailed_age",
+             "age_sub_flag","age_recode_52","age_recode_27","age_recode_12","infant_age_rec_22",
+             "place_of_death_and_status","marital","weekday","reserved_posns4",
+             "data_year","work_injury","manner_of_death","disposition_method","autopsy",
+             "reserved_posns5","activity_code","place_of_injury","icd10","cause_recode_358",
+             "reserved_posns6","cause_recode_113","infant_cause_recode_130","cause_recode_39",
+             "reserved_posns7","num_entity_axis_cond","nea_cond1","nea_cond2","nea_cond3",
+             "nea_cond4","nea_cond5","nea_cond6","nea_cond7","nea_cond8","nea_cond9","nea_cond10",
+             "nea_cond11","nea_cond12","nea_cond13","nea_cond14","nea_cond15","nea_cond16",
+             "nea_cond17","nea_cond18","nea_cond19","nea_cond20","reserved_posns8",
+             "num_record_axis_cond","reserved_posns9","nra_cond1","nra_cond2","nra_cond3",
+             "nra_cond4","nra_cond5","nra_cond6","nra_cond7","nra_cond8","nra_cond9",
+             "nra_cond10","nra_cond11","nra_cond12","nra_cond13","nra_cond14","nra_cond15",
+             "nra_cond16","nra_cond17","nra_cond18","nra_cond19","nra_cond20","reserved_posns10",
+             "race","bridged_race","race_imputed","race_recode3","race_recode5","reserved_posns11",
+             "hispanic","reserved_posns12","hispanic_recode","race_recode40","occupation_4",
+             "occupation_recode","industry_4","industry_recode")
+```
+
+We can now create a dataframe with the fixed width data information.
+
+```{r}
+#Check that all lengths match before creating data frame
+#The lengths look good, but we will need to unlist first, last, and length to convert to vector form.
+#Check length of unlisted lists.
+length(fw_vars)
+length(fw_length)
+length(fw_first)
+length(fw_last)
+
+#Last has a length of 70 due to the numeric 0s - will need to convert those to NA first
+length(unlist(fw_length))
+length(unlist(fw_first))
+length(unlist(fw_last))
+
+#Convert numeric 0s in fw_last to missing (NA)
+fw_last2 <- lapply(fw_last,function(x){
+  if(identical(x,numeric(0))){
+    x = NA
+  }
+  else{x = x}
+})
+#Check
+#fw_last2
+
+#Check new length
+length(fw_last2)
+
+#Create dataframe
+fw_data <- data.frame(first = unlist(fw_first),
+                      last = unlist(fw_last2),
+                      length = unlist(fw_length),
+                      vars = fw_vars)
+
+#Examine fixed width data frame
+fw_data
+
+#Replace the last positions with the first positions when last is missing
+i = 1
+for(i in 1:length(fw_data$last)){
+  if(is.na(fw_data$last[i])){
+    fw_data$last[i] = fw_data$first[i]
+  }
+  i = i + 1
+}
+```
+
+
+#### Read in the data - Attempt #2
+
+We are finally ready to read in the fixed width 2020 mortality data file.
+
+```{r}
+death2020 <- read_fwf("mort2020.csv", fwf_positions(fw_data$first, fw_data$last, fw_data$vars))
+
+#Drop columns we definitely don't need for now
+death2020 <- death2020 %>%
+  select(-c(reserved_posns,reserved_posns2,reserved_posns3,reserved_posns4,reserved_posns5,
+            reserved_posns6,reserved_posns7,reserved_posns8,reserved_posns9,reserved_posns10,
+            reserved_posns11,reserved_posns12,edu_1989,age_sub_flag,infant_age_rec_22,
+            infant_cause_recode_130,bridged_race))
+
+#Check
+head(death2020)
+```
+
+Hooray! After checking the values against the documentation, we currently have a functional data frame. Let's look more closely at the available fields to understand what mortality data we have available to us.
+
+```{r}
+str(death2020)
+```
+
+We have a beefy dataset of 3,390,278 rows with 76 different columns. These columns include demographics such as gender, age, race, ethnicity, marital status, occupation, and industry. There are also fields that describe time and manner of death.
+
+In the meantime, it may be useful for us to see how many missing values are in each column as columns with sparse values may or may not be usable.
+
+```{r}
+sapply(death2020,function(x){sum(is.na(x))})
+```
+
+Unfortunately, we are seeing high numbers of missing values for activity, occupation, and industry. However, with upwards of 3.3 million cases, the impact of those missing values will depend on what we decide to investigate.
+
+We will leave the basic data cleaning here and examine the contents of the dataset more closely in the Data Exploration segment of this project.
+
+
